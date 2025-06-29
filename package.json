@@ -9,7 +9,8 @@
     "astro": "astro",
     "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\"",
     "typecheck": "tsc --noEmit",
-    "test:cov": "echo not ready to setup test..."
+    "test:cov": "echo not ready to setup test...",
+    "prepare": "husky"
   },
   "dependencies": {
     "astro": "^5.10.1"
@@ -17,5 +18,10 @@
   "author": "Roberto A. Baños Alvarez",
   "jest": {
     "passWithNoTests": true
+  },
+  "devDependencies": {
+    "git-commit-msg-linter": "^5.0.8",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.1.2"
   }
 }
