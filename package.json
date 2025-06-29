@@ -3,12 +3,19 @@
   "type": "module",
   "version": "0.0.1",
   "scripts": {
-    "dev": "astro dev",
+    "dev": "astro dev --host 0.0.0.0",
     "build": "astro build",
     "preview": "astro preview",
-    "astro": "astro"
+    "astro": "astro",
+    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\"",
+    "typecheck": "tsc --noEmit",
+    "test:cov": "echo not ready to setup test..."
   },
   "dependencies": {
     "astro": "^5.10.1"
+  },
+  "author": "Roberto A. Baños Alvarez",
+  "jest": {
+    "passWithNoTests": true
   }
 }
