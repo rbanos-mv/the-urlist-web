@@ -1,0 +1,159 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches: [main, development, "feature/**", "fix/**"]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  actions: none
+  contents: read
+  pull-requests: read
+  statuses: write # Necesario para actualizar estados en branches protegidas
+
+concurrency:
+  group: ${{
+    github.ref == 'refs/heads/main' && 'ci-main' ||
+    github.ref == 'refs/heads/development' && 'ci-development' ||
+    github.head_ref && format('ci-pr-{0}', github.head_ref) ||
+    startsWith(github.ref, 'refs/heads/feature/') && format('ci-feature-{0}', github.ref_name) ||
+    startsWith(github.ref, 'refs/heads/fix/') && format('ci-fix-{0}', github.ref_name) ||
+    format('ci-other-{0}', github.ref_name) }}
+  cancel-in-progress: true
+
+env:
+  CI: true
+  FORCE_COLOR: 1
+  TSC_COMPILE_ON_ERROR: false
+
+jobs:
+  ci:
+    if: |
+      github.ref == 'refs/heads/main' ||
+      github.ref == 'refs/heads/development' ||
+      github.event_name == 'pull_request'
+
+    name: CI
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all history for all branches and tags
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+        id: setup-node
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.npm
+            node_modules
+          key: n_m-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-${{ hashFiles('tsconfig*.json') }}
+          restore-keys: |
+            n_m-${{ runner.os }}-
+        continue-on-error: true
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+        timeout-minutes: 5
+        env:
+          NODE_ENV: development
+          NPM_CONFIG_AUDIT: false # Deshabilita audit para builds más rápidos
+
+      - name: Get commit range
+        id: commits
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            # Para PRs: commits entre base y HEAD
+            base_ref="${{ github.event.pull_request.base.ref }}"
+            echo "range=$(git rev-list --no-merges origin/$base_ref..HEAD | tr '\n' ' ')" >> $GITHUB_OUTPUT
+          else
+            # Para pushes: últimos 10 commits (sin merges)
+            echo "range=$(git rev-list --no-merges --max-count=10 ${{ github.sha }} | tr '\n' ' ')" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Lint commit messages
+        run: |
+          set -euo pipefail  # Habilita modo estricto para manejo de errores
+          for commit in ${{ steps.commits.outputs.range }}; do
+            echo "Linting commit $commit"
+            git show -s --format=%B "$commit" | npx git-commit-msg-linter || {
+              echo "::error::Commit message validation failed for commit $commit"
+              exit 1
+            }
+          done
+
+      - name: Typecheck
+        run: npm run typecheck -- --noEmit --skipLibCheck
+        timeout-minutes: 3
+        env:
+          NODE_ENV: production
+
+      - name: Check code formatting
+        run: npm run format:check
+
+      - name: Run linter
+        run: npm run lint
+
+      - name: Run tests with coverage
+        run: npm run test:cov
+        timeout-minutes: 10
+        env:
+          NODE_ENV: test
+        if: always()
+        continue-on-error: ${{ github.event_name == 'pull_request' }} # Permite fallos en PRs
+
+      - name: Upload test results
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            coverage/
+            test-results.xml
+
+      - name: Skip build if only non-source files changed
+        uses: actions/github-script@v6
+        id: skip-check
+        with:
+          script: |
+            const skipPaths = ['docs/', 'config/', '.github/', 'README.md']
+            const commits = context.payload.commits || []
+            const changedFiles = commits.flatMap(c => {
+                return [
+                  ...(c.added || []),
+                  ...(c.modified || []),
+                  ...(c.removed || [])
+                ]
+              })
+            const shouldSkip = changedFiles.length > 0 && 
+              changedFiles.every(f => skipPaths.some(p => f.startsWith(p)))
+            core.setOutput('should-skip', shouldSkip)
+
+      - name: Build project
+        if: steps.skip-check.outputs.should-skip != 'true'
+        run: npm run build
+        timeout-minutes: 5
+
+      - name: Verify no node_modules in repo
+        run: |
+          if git ls-tree -r HEAD --name-only | grep -q 'node_modules/'; then
+            echo "::error title=node_modules detected::The node_modules directory should not be committed, but it was found in the Git history."
+            echo "Please run: 'git rm -r --cached node_modules'"
+            exit 1
+          fi
+
+      - name: Notify on failure
+        if: failure()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            core.warning('Workflow failed! Please check the logs')
